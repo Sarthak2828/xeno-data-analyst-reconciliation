@@ -2,10 +2,10 @@
 Regenerates analysis/reconciliation_waterfall.png.
 
 Values are NOT hardcoded from memory - they are the output of the bridge
-steps in sql/reconciliation_queries.sql, run against data/comm_log.db:
-    step 0 (naive)            -> 30
-    step 2 (eligibility gate) -> 26
-    step 3b (retry dedupe)    -> 22
+steps in sql/reconciliation/, run against data/comm_log.db:
+    step1_naive_count.sql        -> 30
+    step2_eligibility_filter.sql -> 26
+    step3_final_dedupe.sql       -> 22
 
 Run:
     python analysis/make_waterfall.py

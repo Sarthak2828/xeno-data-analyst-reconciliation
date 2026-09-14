@@ -1,26 +1,23 @@
--- =====================================================================
--- Finance metric: target_base
--- Scope: merchant_id = 501, October 2026, communication_type = '2'
---        (Campaign), all "Diwali" campaigns.
+-- Final query: target_base for merchant 501, October 2026, Diwali campaigns
 -- Expected result: 22
 --
--- Definition (from README.md, "What reporting considers a qualifying send"):
---   target_base counts qualifying sends per UNDERLYING COMMUNICATION.
---   An underlying communication = a root campaign PLUS every campaign
---   chained off it via campaign.parent_id (retries, at any depth).
---     * Retry chain (>1 campaign in the family): a customer who needed
---       several attempts to finally be delivered counts ONCE.
---     * Standalone campaign (no parent, no children): every send row is
---       its own event, even if the same customer appears twice.
---   Only campaigns whose creation workflow has cleared AND whose send
---   pipeline has finished are eligible for official reporting.
--- =====================================================================
+-- Short version of the rule (full reasoning in sql/reconciliation/):
+--   A campaign only counts if it's approved AND fully processed.
+--   Campaigns are grouped into "families" by walking parent_id - a
+--   family is a campaign plus every retry chained off it, however
+--   deep that goes.
+--     - If a family has more than one campaign (an actual retry
+--       chain), count distinct customers once each.
+--     - If a family is just one standalone campaign, count every
+--       row - a repeat customer there is two real, separate sends.
 
 WITH RECURSIVE
 
--- 1. Resolve every campaign to the ROOT of its retry chain by walking
---    parent_id upwards. Roots seed the recursion; children inherit the
---    root_id of their parent, so A -> B -> C all resolve to A.
+-- Walk parent_id upward so every campaign knows which "family" it
+-- belongs to. A campaign with no parent starts as its own root; a
+-- campaign whose parent is already placed inherits that parent's root.
+-- This is what lets a 3-level chain like 9001 -> 9002 -> 9003 all
+-- resolve back to 9001, not just one hop.
 root_of(id, root_id) AS (
     SELECT id, id
     FROM   campaign
@@ -31,22 +28,23 @@ root_of(id, root_id) AS (
     JOIN   root_of  r ON c.parent_id = r.id
 ),
 
--- 2. Family size decides the counting rule. Size 1 = standalone
---    communication; size > 1 = retry chain. Shape is a structural
---    property of the campaign graph, so it is measured over ALL
---    campaigns, before the reporting-eligibility filter is applied.
+-- How many campaigns are in each family? 1 = standalone, more than
+-- that = an actual retry chain. This decides which counting rule
+-- applies below. I'm computing this over every campaign, not just the
+-- eligible ones, since being part of a chain is a fact about
+-- parent_id, not about approval status - though I checked, and doing
+-- it the other way around doesn't change the answer here either.
 chain_size AS (
     SELECT root_id, COUNT(*) AS campaigns_in_chain
     FROM   root_of
     GROUP  BY root_id
 ),
 
--- 3. Send rows in scope, tagged with their underlying communication.
---    Campaign-level eligibility gate is applied here:
---      creation_status must be finalized/live, and
---      processing_status must be 'processed'.
---    (communication_log rows can exist for a campaign that has not yet
---     cleared approval - the send pipeline runs ahead of bookkeeping.)
+-- The actual sends in scope, each one tagged with which family it
+-- belongs to. This is also where the eligibility filter lives -
+-- communication_log can have rows for a campaign that hasn't cleared
+-- approval yet (the send pipeline doesn't wait around for that), so
+-- those need to be dropped here.
 eligible_sends AS (
     SELECT r.root_id,
            s.campaigns_in_chain,
@@ -65,14 +63,14 @@ eligible_sends AS (
       AND  c.processing_status = 'processed'
 ),
 
--- 4. Apply the per-communication counting rule.
+-- Apply the actual rule: distinct customers for a chain, plain row
+-- count for a standalone campaign. One CASE statement, one family per
+-- row.
 per_communication AS (
     SELECT root_id,
            CASE WHEN campaigns_in_chain > 1
-                -- retry chain: collapse repeat attempts at the customer
-                THEN COUNT(DISTINCT customer_id)
-                -- standalone: every send row is its own event
-                ELSE COUNT(log_id)
+                THEN COUNT(DISTINCT customer_id)  -- chain: collapse repeat attempts
+                ELSE COUNT(log_id)                -- standalone: every row is its own send
            END AS qualifying_sends
     FROM   eligible_sends
     GROUP  BY root_id, campaigns_in_chain
