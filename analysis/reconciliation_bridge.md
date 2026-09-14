@@ -7,11 +7,16 @@ each one before writing this so nothing below is typed from memory.
 
 ## The actual bridge
 
+Before step 0, I checked whether the obvious scope filters — merchant, communication
+type, the October date window, the "Diwali" name match — actually excluded anything.
+They didn't; every row already satisfies all of them. Not an adjustment, just a check I
+did before trusting the naive count as a real baseline.
+
 | Step | Description | Result | Reason |
 |---|---|---|---|
 | 0 | Naive count | 30 | Starting point - one `communication_log` row = one send |
 | 1 | Drop campaigns not cleared for reporting | 26 | Campaign 9004 is still `approval_awaiting`; its 4 rows exist but aren't signed off yet |
-| 2 | *(wrong turn)* Dedupe customers globally | 21 | Tried this first, one short - see below |
+| 2 | *(wrong turn)* Dedupe customers globally | 21 | A few customers repeat in the log, so my first instinct was to just count unique `customer_id` - came up one short, see below |
 | final | Dedupe only inside retry chains | **22** | Collapses C2 / C3 / D1's repeat attempts, leaves standalone repeats (C20) alone |
 
 **Why step 2 is in here even though it's wrong:** landing on 21 instead of 22 is what
